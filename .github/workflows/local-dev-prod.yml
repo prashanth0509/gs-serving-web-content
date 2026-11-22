@@ -1,0 +1,137 @@
+name: Local Dev and Prod Deployment
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - prod
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-dev:
+    name: Deploy to dev
+    if: >-
+      (github.event_name == 'push' && github.ref_name == 'dev') ||
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev')
+    runs-on: [self-hosted, windows-local]
+    environment: dev
+
+    env:
+      ENVIRONMENT: dev
+      CONTAINER_NAME: gs-serving-web-content-dev
+      HOST_PORT: "4040"
+      IMAGE_NAME: gs-serving-web-content-dev
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build dev image
+        shell: pwsh
+        run: |
+          docker build --pull -t "${{ env.IMAGE_NAME }}:${{ github.sha }}" .\complete
+          docker tag "${{ env.IMAGE_NAME }}:${{ github.sha }}" "${{ env.IMAGE_NAME }}:latest"
+
+      - name: Deploy dev container
+        shell: pwsh
+        run: |
+          $existing = docker ps -a --filter "name=^/${{ env.CONTAINER_NAME }}$" --format "{{.Names}}"
+          if ($existing) {
+            docker rm -f "${{ env.CONTAINER_NAME }}"
+          }
+
+          docker run -d `
+            --name "${{ env.CONTAINER_NAME }}" `
+            --restart unless-stopped `
+            -p "${{ env.HOST_PORT }}:8080" `
+            "${{ env.IMAGE_NAME }}:latest"
+
+      - name: Verify dev deployment
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddSeconds(90)
+          do {
+            try {
+              $response = Invoke-WebRequest `
+                -UseBasicParsing `
+                -Uri "http://localhost:${{ env.HOST_PORT }}/greeting?name=Dev" `
+                -TimeoutSec 5
+              if ($response.StatusCode -eq 200 -and $response.Content -match "Hello, Dev") {
+                Write-Output "Dev deployment is healthy on http://localhost:${{ env.HOST_PORT }}"
+                exit 0
+              }
+            } catch {}
+            Start-Sleep -Seconds 3
+          } while ((Get-Date) -lt $deadline)
+
+          docker logs --tail 200 "${{ env.CONTAINER_NAME }}"
+          throw "Dev deployment did not become healthy"
+
+  deploy-prod:
+    name: Deploy to prod
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod')
+    runs-on: [self-hosted, windows-local]
+    environment: prod
+
+    env:
+      ENVIRONMENT: prod
+      CONTAINER_NAME: gs-serving-web-content-prod
+      HOST_PORT: "6060"
+      IMAGE_NAME: gs-serving-web-content-prod
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build prod image
+        shell: pwsh
+        run: |
+          docker build --pull -t "${{ env.IMAGE_NAME }}:${{ github.sha }}" .\complete
+          docker tag "${{ env.IMAGE_NAME }}:${{ github.sha }}" "${{ env.IMAGE_NAME }}:latest"
+
+      - name: Deploy prod container
+        shell: pwsh
+        run: |
+          $existing = docker ps -a --filter "name=^/${{ env.CONTAINER_NAME }}$" --format "{{.Names}}"
+          if ($existing) {
+            docker rm -f "${{ env.CONTAINER_NAME }}"
+          }
+
+          docker run -d `
+            --name "${{ env.CONTAINER_NAME }}" `
+            --restart unless-stopped `
+            -p "${{ env.HOST_PORT }}:8080" `
+            "${{ env.IMAGE_NAME }}:latest"
+
+      - name: Verify prod deployment
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddSeconds(90)
+          do {
+            try {
+              $response = Invoke-WebRequest `
+                -UseBasicParsing `
+                -Uri "http://localhost:${{ env.HOST_PORT }}/greeting?name=Prod" `
+                -TimeoutSec 5
+              if ($response.StatusCode -eq 200 -and $response.Content -match "Hello, Prod") {
+                Write-Output "Prod deployment is healthy on http://localhost:${{ env.HOST_PORT }}"
+                exit 0
+              }
+            } catch {}
+            Start-Sleep -Seconds 3
+          } while ((Get-Date) -lt $deadline)
+
+          docker logs --tail 200 "${{ env.CONTAINER_NAME }}"
+          throw "Prod deployment did not become healthy"
